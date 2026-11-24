@@ -1,10 +1,13 @@
 import { useState } from 'react'
 import './App.css'
+import { AuthScreen } from './auth/AuthScreen'
+import { useAuth } from './auth/useAuth'
 import { StatusBanner } from './components/StatusBanner'
 import { extractTextItems, groupRows, type PdfRow } from './pdf/extract'
 import { generate } from './ai/hybrid'
 
 function App() {
+  const { user, loading, signOut } = useAuth()
   const [rows, setRows] = useState<PdfRow[]>([])
   const [fileName, setFileName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -12,6 +15,21 @@ function App() {
   const [inference, setInference] = useState<'device' | 'cloud' | undefined>(
     undefined,
   )
+
+  // Wait for the initial auth state before deciding what to render,
+  // so a signed-in user never sees the auth screen flash.
+  if (loading) {
+    return (
+      <main>
+        <h1>SafeDocs</h1>
+        <p role="status">Checking sign-in…</p>
+      </main>
+    )
+  }
+
+  if (!user) {
+    return <AuthScreen />
+  }
 
   async function onFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
@@ -54,6 +72,12 @@ function App() {
           Privacy-first: your PDF is parsed locally. Ask a question and the
           answer prefers Chrome&apos;s on-device model; nothing is uploaded
           unless cloud inference is required.
+        </p>
+        <p>
+          Signed in.{' '}
+          <button type="button" onClick={() => void signOut()}>
+            Sign out
+          </button>
         </p>
         <label>
           <p>Choose a medical record PDF:</p>

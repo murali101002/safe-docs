@@ -1,0 +1,130 @@
+rules_version = '2';
+
+// ===============================================================
+// SafeDocs — Cloud Firestore Security Rules
+// ===============================================================
+//
+// Principle: default deny. Every path that is not explicitly allowed
+// below is inaccessible, including to authenticated users.
+//
+// Assumed Data Model
+// ------------------
+//
+// Collection: users/{uid}/documents/{docId}   (only subcollection in use)
+// Document ID: auto-ID (20-char alphanumeric)
+// Fields:
+//   - fileName:        string  (required, 1..512 chars)  - original file name
+//   - redactedContent: string  (required, 0..200000 chars) - REDACTED extract only.
+//     Raw (un-redacted) document text must NEVER be written to Firestore.
+//   - rowCount:        number  (required, integer 0..100000) - extracted row count
+//   - createdAt:       timestamp (required, immutable)  - set once on create
+//   - updatedAt:       timestamp (required)            - refreshed on update
+//
+// No other fields are permitted (strict schema). No document under /users
+// may contain an `email`, `role`, `isAdmin`, or similar field: the client
+// never writes one, and these rules would reject it.
+//
+// Access model
+// ------------
+// A signed-in user has full access ONLY to their own subtree
+// users/{uid}/**. Everything else is denied.
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =============================================================
+    // Helper Functions
+    // =============================================================
+
+    // The request is authenticated and targets the caller's own subtree.
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    // Document contains no fields outside the defined schema.
+    function hasOnlyAllowedFields(data, fields) {
+      return data.keys().hasOnly(fields);
+    }
+
+    // All required fields are present.
+    function hasRequiredFields(data, fields) {
+      return data.keys().hasAll(fields);
+    }
+
+    // String field with inclusive size bounds.
+    function validStringLength(data, field, minLen, maxLen) {
+      return data[field] is string &&
+        data[field].size() >= minLen &&
+        data[field].size() <= maxLen;
+    }
+
+    // Integer field within [minVal, maxVal].
+    function validNumber(data, field, minVal, maxVal) {
+      return data[field] is number &&
+        data[field] == int(data[field]) &&
+        data[field] >= minVal &&
+        data[field] <= maxVal;
+    }
+
+    // createdAt must not change after creation.
+    function createdAtUnchanged() {
+      return !('createdAt' in resource.data) ||
+        !request.resource.data.diff(resource.data)
+          .affectedKeys()
+          .hasAny(['createdAt']);
+    }
+
+    // Full validator for a document written anywhere under users/{uid}/**.
+    // Used on BOTH create and update (Validator Function Pattern), so an
+    // owner cannot corrupt the schema after an initial valid create.
+    function isValidUserDocument() {
+      let allowedFields = ['fileName', 'redactedContent', 'rowCount', 'createdAt', 'updatedAt'];
+      let requiredFields = ['fileName', 'redactedContent', 'rowCount', 'createdAt', 'updatedAt'];
+      let data = request.resource.data;
+      return hasOnlyAllowedFields(data, allowedFields) &&
+        hasRequiredFields(data, requiredFields) &&
+        validStringLength(data, 'fileName', 1, 512) &&
+        validStringLength(data, 'redactedContent', 0, 200000) &&
+        validNumber(data, 'rowCount', 0, 100000) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // On update: schema must still be valid, createdAt immutable.
+    function isStillValidUserDocument() {
+      return isValidUserDocument() && createdAtUnchanged();
+    }
+
+    // =============================================================
+    // User-owned subtree: users/{uid}/**
+    // =============================================================
+    match /users/{uid}/{document=**} {
+      // Owner-only read (get + list) of every document in their subtree.
+      // No other user, authenticated or not, can ever read here.
+      allow read: if isOwner(uid);
+
+      // Owner-only create with strict schema + size validation.
+      allow create: if isOwner(uid) && isValidUserDocument();
+
+      // Owner-only update: schema must stay valid, createdAt immutable.
+      allow update: if isOwner(uid) && isStillValidUserDocument();
+
+      // Owner-only delete (no validation needed — nothing to validate).
+      allow delete: if isOwner(uid);
+    }
+
+    // =============================================================
+    // Explicit default deny for everything else
+    // =============================================================
+    // Overlapping allows are OR'ed in Firestore rules, so this does not
+    // cancel the owner rules above; it documents (and enforces) that all
+    // paths outside users/{uid}/** are unreachable. The implicit deny at
+    // the end of every ruleset guarantees the same, but being explicit
+    // makes review easier.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
