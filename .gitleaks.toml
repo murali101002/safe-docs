@@ -1,10 +1,16 @@
 # Gitleaks configuration — extends the default rule set.
-# The only allowlist entry is for the placeholder values in .env.example;
-# real secrets anywhere else (including .env, which is gitignored) are still flagged.
+# Allowlist entries:
+# 1. The placeholder values in .env.example.
+# 2. The example App Check debug-token UUIDs inside the vendored Firebase
+#    skill docs (.agents/skills) — documentation examples, not real tokens.
+# Real secrets anywhere else (including .env, which is gitignored) are still flagged.
 [extend]
 useDefault = true
 
 [allowlist]
-description = ".env.example placeholder values (e.g. your-api-key)"
+description = "documentation examples only (.env.example placeholders, skill-doc example UUIDs)"
 paths = ['''\.env\.example$''']
-regexes = ['''(?i)\byour-[a-z0-9-]+\b''']
+regexes = [
+  '''(?i)\byour-[a-z0-9-]+\b''',
+  '''(?i)123a4567-b89c-12d3-e456-789012345678''',
+]

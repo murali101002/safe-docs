@@ -65,3 +65,28 @@ button {
 button:hover {
   background: #0846a8;
 }
+
+.auth {
+  max-width: 380px;
+  margin-top: 1rem;
+}
+
+.auth label p {
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.auth input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #c0c0c0;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+.auth button[type='submit'] {
+  margin: 0.75rem 0 0;
+  width: 100%;
+}
+
