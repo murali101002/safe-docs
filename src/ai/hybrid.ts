@@ -16,8 +16,15 @@ import { getFirebase } from '../firebase'
  * in firebase@13 — see node_modules/@firebase/ai/dist/ai.d.ts.
  */
 
-/** Cloud fallback model. Kept here so it is easy to bump for the demo. */
-export const CLOUD_MODEL = 'gemini-2.5-flash'
+/**
+ * Cloud fallback model.
+ *
+ * Verified against https://firebase.google.com/docs/ai-logic/models (Nov 2026):
+ * gemini-2.5-flash is deprecated and stops routing on Dec 1, 2026; the skill
+ * docs require a current Gemini 3+ model. gemini-3.8-flash is stable, fast,
+ * and needs no billing on the Gemini Developer API free tier.
+ */
+export const CLOUD_MODEL = 'gemini-3.8-flash'
 
 /** Result of one generation call, tagged with where it actually ran. */
 export interface HybridResult {
@@ -49,6 +56,31 @@ export async function generate(prompt: string): Promise<HybridResult> {
       ? 'device'
       : 'cloud',
   }
+}
+
+let onDeviceModel: GenerativeModel | undefined
+
+/**
+ * Generate with the on-device model ONLY.
+ *
+ * `InferenceMode.ONLY_ON_DEVICE` means the SDK will never fall back to a
+ * cloud model — if Chrome's Gemini Nano is unavailable the call throws.
+ * This is the mandatory path for anything that may contain PII (raw
+ * document text, images) before redaction exists.
+ */
+export async function generateOnDevice(prompt: string): Promise<{ text: string }> {
+  aiInstance ??= getAI(getFirebase().app, { backend: new GoogleAIBackend() })
+  onDeviceModel ??= getGenerativeModel(aiInstance, {
+    mode: InferenceMode.ONLY_ON_DEVICE,
+    // No cloud params on purpose: nothing here may ever reach the cloud.
+  })
+  const result = await onDeviceModel.generateContent(prompt)
+  const { response } = result
+  // Defense in depth: refuse a response that reports cloud inference.
+  if (response.inferenceSource === InferenceSource.IN_CLOUD) {
+    throw new Error('On-device guard violated: response ran in the cloud')
+  }
+  return { text: response.text() }
 }
 
 /**

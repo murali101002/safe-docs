@@ -4,17 +4,18 @@ import { AuthScreen } from './auth/AuthScreen'
 import { useAuth } from './auth/useAuth'
 import { StatusBanner } from './components/StatusBanner'
 import { extractTextItems, groupRows, type PdfRow } from './pdf/extract'
-import { generate } from './ai/hybrid'
+import { parseDocDate, parseLabResults, type LabResult } from './labs/parseRows'
+import { LabResultsTable } from './labs/LabResultsTable'
+import { generateOnDevice } from './ai/hybrid'
 
 function App() {
   const { user, loading, signOut } = useAuth()
   const [rows, setRows] = useState<PdfRow[]>([])
+  const [results, setResults] = useState<LabResult[]>([])
+  const [docDate, setDocDate] = useState<string | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [answer, setAnswer] = useState<string | null>(null)
-  const [inference, setInference] = useState<'device' | 'cloud' | undefined>(
-    undefined,
-  )
 
   // Wait for the initial auth state before deciding what to render,
   // so a signed-in user never sees the auth screen flash.
@@ -37,10 +38,16 @@ function App() {
     setError(null)
     try {
       const items = await extractTextItems(await file.arrayBuffer())
-      setRows(groupRows(items))
+      const grouped = groupRows(items)
+      setRows(grouped)
+      setResults(parseLabResults(grouped))
+      setDocDate(parseDocDate(grouped))
       setFileName(file.name)
+      setAnswer(null)
     } catch (err) {
       setRows([])
+      setResults([])
+      setDocDate(null)
       setFileName(null)
       setError(err instanceof Error ? err.message : 'Failed to read PDF')
     }
@@ -55,9 +62,10 @@ function App() {
         `Explain the following document extract in plain language. ` +
         `Document "${fileName ?? 'record.pdf'}":\n` +
         rows.map((row) => row.map((cell) => cell.text).join(' | ')).join('\n')
-      const result = await generate(prompt)
-      setAnswer(result.text)
-      setInference(result.ranOn)
+      // Raw rows may contain PII, so this runs on-device ONLY — it must
+      // never fall back to the cloud (redaction arrives in feature 04).
+      const { text } = await generateOnDevice(prompt)
+      setAnswer(text)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI request failed')
     }
@@ -65,13 +73,13 @@ function App() {
 
   return (
     <>
-      <StatusBanner inference={inference} />
+      <StatusBanner inference="device" />
       <main>
         <h1>SafeDocs</h1>
         <p>
-          Privacy-first: your PDF is parsed locally. Ask a question and the
-          answer prefers Chrome&apos;s on-device model; nothing is uploaded
-          unless cloud inference is required.
+          Privacy-first: your PDF is parsed locally, and anything that may
+          contain personal information runs only on Chrome&apos;s on-device
+          model. Nothing leaves this computer.
         </p>
         <p>
           Signed in.{' '}
@@ -86,28 +94,18 @@ function App() {
 
         {fileName && (
           <p>
-            <strong>{fileName}</strong> — {rows.length} rows extracted
+            <strong>{fileName}</strong>
+            {docDate && <> — collected {docDate}</>} — {results.length} lab
+            values parsed
             <button type="button" onClick={onExplain}>
-              Explain this document
+              Explain this document (on-device)
             </button>
           </p>
         )}
         {error && <p role="alert">{error}</p>}
         {answer && <pre className="answer">{answer}</pre>}
 
-        {rows.length > 0 && (
-          <table>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i}>
-                  {row.map((cell, j) => (
-                    <td key={j}>{cell.text}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        {fileName && <LabResultsTable results={results} />}
       </main>
     </>
   )
