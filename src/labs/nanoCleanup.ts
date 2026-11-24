@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import type { PdfRow } from '../pdf/extract'
-import { generateOnDevice } from '../ai/hybrid'
 import { parseRowsDetailed, type LabResult, type RowParseInfo } from './parseRows'
 
 /**
@@ -31,6 +30,16 @@ export interface CleanupOptions {
    * never take the cloud path.
    */
   generate?: (prompt: string) => Promise<{ text: string }>
+}
+
+/**
+ * Default generator: the on-device model only. The hybrid module is
+ * imported lazily so importing nanoCleanup does not require Firebase
+ * config (tests run without a Firebase project).
+ */
+async function defaultGenerate(prompt: string): Promise<{ text: string }> {
+  const { generateOnDevice } = await import('../ai/hybrid')
+  return generateOnDevice(prompt)
 }
 
 export interface CleanupResult {
@@ -101,7 +110,7 @@ export async function cleanupUnparsedRows(
   const candidates = findCleanupCandidates(rows)
   if (candidates.length === 0) return { results: [], discarded: 0 }
 
-  const generate = options.generate ?? generateOnDevice
+  const generate = options.generate ?? defaultGenerate
   const { text } = await generate(buildPrompt(candidates))
 
   let parsed: unknown

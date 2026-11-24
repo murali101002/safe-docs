@@ -37,13 +37,15 @@ describe('on-device guard for raw text', () => {
     expect(onDeviceBody()).toContain('InferenceSource.IN_CLOUD')
   })
 
-  it('nanoCleanup imports the on-device generator, not the hybrid one', () => {
-    expect(nanoSrc).toContain("from '../ai/hybrid'")
+  it('nanoCleanup reaches only the on-device generator, not the hybrid one', () => {
+    // The on-device module is loaded lazily (no Firebase config needed to
+    // import nanoCleanup), and only the ONLY_ON_DEVICE path is reachable.
+    expect(nanoSrc).toMatch(/import\(['"]\.\.\/ai\/hybrid['"]\)/)
     expect(nanoSrc).toContain('generateOnDevice')
-    // The hybrid generate() (PREFER_ON_DEVICE, may fall back to cloud) must
-    // never be imported in the raw-rows cleanup path.
-    expect(nanoSrc).not.toMatch(/import\s*\{[^}]*\bgenerate\b[^}]*\}\s*from/)
+    // No static import of the hybrid module (PREFER_ON_DEVICE generate()
+    // must never be reachable from the raw-rows cleanup path).
+    expect(nanoSrc).not.toMatch(/import\s*\{[^}]*\}\s*from\s*['"]\.\.\/ai\/hybrid['"]/)
     // And the default generator must be the on-device one.
-    expect(nanoSrc).toContain('options.generate ?? generateOnDevice')
+    expect(nanoSrc).toContain('options.generate ?? defaultGenerate')
   })
 })
