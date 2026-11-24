@@ -1,7 +1,11 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
+// The worker URL is only meaningful in a browser. In Node (golden tests) the
+// legacy build resolves its fake worker relative to its own module file.
+if (typeof window !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
+}
 
 /** One positioned text fragment from a PDF page. */
 export interface PdfTextItem {
@@ -21,8 +25,13 @@ export type PdfRow = PdfTextItem[]
  * transform[4] and y is transform[5] (baseline origin, PDF coords grow
  * upward — we keep pdf.js's values as-is for clustering).
  */
-export async function extractTextItems(data: ArrayBuffer): Promise<PdfTextItem[]> {
-  const task = pdfjsLib.getDocument({ data })
+export async function extractTextItems(
+  data: ArrayBuffer | Uint8Array,
+): Promise<PdfTextItem[]> {
+  // pdf.js insists on plain Uint8Array (a Node Buffer is rejected), and the
+  // buffer must not be a view we keep using afterwards.
+  const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(data)
+  const task = pdfjsLib.getDocument({ data: bytes })
   const doc = await task.promise
   const items: PdfTextItem[] = []
   try {
