@@ -1,0 +1,10 @@
+# Gitleaks configuration — extends the default rule set.
+# The only allowlist entry is for the placeholder values in .env.example;
+# real secrets anywhere else (including .env, which is gitignored) are still flagged.
+[extend]
+useDefault = true
+
+[allowlist]
+description = ".env.example placeholder values (e.g. your-api-key)"
+paths = ['''\.env\.example$''']
+regexes = ['''(?i)\byour-[a-z0-9-]+\b''']

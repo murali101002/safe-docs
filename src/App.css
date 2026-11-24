@@ -1,0 +1,67 @@
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  color: #1a1a1a;
+  background-color: #fafafa;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+main {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 1rem 2rem 3rem;
+}
+
+.status-banner {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 0.6rem 1.5rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  background: #fff;
+}
+
+table td,
+table th {
+  border: 1px solid #d8d8d8;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+
+tr:nth-child(even) td {
+  background: #f3f6fa;
+}
+
+.answer {
+  white-space: pre-wrap;
+  background: #eef3fb;
+  border: 1px solid #c6d6f0;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+button {
+  margin-left: 0.75rem;
+  padding: 0.35rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid #0b57d0;
+  background: #0b57d0;
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #0846a8;
+}
