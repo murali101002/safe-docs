@@ -86,6 +86,28 @@ are additionally scrubbed through the layer-1 regexes.
 `idb`): `rehydrate(text, tokenMap)` swaps real values back into cloud
 answers locally; the store never imports Firebase (guard-tested).
 
+## Local retrieval (on-device search)
+
+After redaction approval, the approved redacted text is indexed locally:
+
+- **Chunking** (`src/retrieval/chunk.ts`): line-based chunks of ~300 words
+  (~400 tokens) with ~50-word overlap; each chunk keeps its page numbers
+  for `[doc, page]` citations.
+- **Embeddings** (`src/retrieval/embedder.ts` + `embed.worker.ts`):
+  transformers.js runs `Xenova/all-MiniLM-L6-v2` (the ONNX build the
+  library docs pair with v4: `onnx-community/all-MiniLM-L6-v2-ONNX`) inside
+  a **Web Worker**, mean-pooled and L2-normalized. Vectors are cached in
+  IndexedDB and invalidated by a text hash, so re-indexing after a new
+  approval only embeds changed chunks.
+- **Hybrid ranking** (`src/retrieval/search.ts`):
+  `score = 0.7 × cosine + 0.3 × keyword overlap`, with lab vocabulary
+  (A1C, LDL, TSH, …) worth a bonus and expanded through aliases
+  (`a1c → hemoglobin a1c / HbA1c / estimated average glucose`).
+- **Structured lab queries**: questions about lab rows are matched against
+  the parsed `LabResult`s as data (value, unit, flag, date) — not prose.
+- Privacy: no module in the retrieval stack imports Firebase (guard
+  tests); vectors and chunks stay on this device.
+
 ## Getting started
 
 ```bash
