@@ -60,21 +60,41 @@ export async function generate(prompt: string): Promise<HybridResult> {
 
 let onDeviceModel: GenerativeModel | undefined
 
+/** An image to analyze on-device (base64, no data: prefix). */
+export interface OnDeviceImage {
+  base64: string
+  mimeType: string
+}
+
 /**
  * Generate with the on-device model ONLY.
  *
  * `InferenceMode.ONLY_ON_DEVICE` means the SDK will never fall back to a
  * cloud model — if Chrome's Gemini Nano is unavailable the call throws.
  * This is the mandatory path for anything that may contain PII (raw
- * document text, images) before redaction exists.
+ * document text, IMAGES) before redaction exists.
  */
-export async function generateOnDevice(prompt: string): Promise<{ text: string }> {
+export async function generateOnDevice(
+  prompt: string,
+  image?: OnDeviceImage,
+): Promise<{ text: string }> {
   aiInstance ??= getAI(getFirebase().app, { backend: new GoogleAIBackend() })
   onDeviceModel ??= getGenerativeModel(aiInstance, {
     mode: InferenceMode.ONLY_ON_DEVICE,
     // No cloud params on purpose: nothing here may ever reach the cloud.
   })
-  const result = await onDeviceModel.generateContent(prompt)
+  // Multimodal on-device: text + inline image (Chrome's on-device model
+  // reports cloud inference only if the SDK misroutes — refuse that).
+  const request = image
+    ? [
+        prompt,
+        {
+          type: 'inlineData' as const,
+          inlineData: { mimeType: image.mimeType, data: image.base64 },
+        },
+      ]
+    : prompt
+  const result = await onDeviceModel.generateContent(request)
   const { response } = result
   // Defense in depth: refuse a response that reports cloud inference.
   if (response.inferenceSource === InferenceSource.IN_CLOUD) {

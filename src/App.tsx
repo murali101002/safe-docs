@@ -11,6 +11,7 @@ import { detectRedactions, approveRedactions, type ApprovedRedaction } from './r
 import { RedactionReview } from './redact/RedactionReview'
 import { saveTokenMap } from './redact/tokenStore'
 import type { RedactionSpan } from './redact/types'
+import type { OcrRow } from './ocr/extract'
 import { createEmbedder, type Embedder } from './retrieval/embedder'
 import { buildIndex } from './retrieval/indexer'
 import { chunkLines, type Chunk } from './retrieval/chunk'
@@ -20,15 +21,29 @@ import { askHybrid, type AskOutcome, type AskScopeDoc } from './ai/hybridAsk'
 import { listApprovedDocs, saveApprovedDoc, type StoredDoc } from './sync/docStore'
 import { firebaseSyncAdapter, syncDocument } from './sync/firestoreSync'
 import { TrendsPanel } from './sync/TrendsPanel'
+import {
+  createAppScanQueue,
+  requestScanPermissions,
+  rowsToLabResults,
+  rowsToText,
+  type ScanQueue,
+} from './ocr/scanFlow'
+import { ScanPanel } from './ocr/ScanPanel'
 
 /**
  * The transformers.js worker spawns on first use; keep one instance for the
- * whole session (module-level, not per render).
+ * whole session (module-level, not per render). Same for the scan queue.
  */
 let sessionEmbedder: Embedder | null = null
 function getEmbedder(): Embedder {
   sessionEmbedder ??= createEmbedder()
   return sessionEmbedder
+}
+
+let appScanQueue: ScanQueue | null = null
+function getScanQueue(): ScanQueue {
+  appScanQueue ??= createAppScanQueue()
+  return appScanQueue
 }
 
 const SYNC_OPT_IN_KEY = 'safedocs_sync_opt_in'
@@ -67,6 +82,9 @@ function App() {
     target: 'device' | 'cloud'
     cloudPreview?: string
   } | null>(null)
+
+  // Photo scanning (feature 08).
+  const [scanning, setScanning] = useState<string | null>(null)
 
   const refreshDocs = useCallback(async () => {
     setDocs(await listApprovedDocs())
@@ -151,6 +169,16 @@ function App() {
   async function onFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) return
+    // Photo path: on-device OCR queue (never the cloud). PDF path: local
+    // pdf.js extraction.
+    if (file.type.startsWith('image/')) {
+      setError(null)
+      setParsing(false)
+      void requestScanPermissions()
+      getScanQueue().enqueue(file, file.name)
+      setScanning(file.name)
+      return
+    }
     setError(null)
     setParsing(true)
     setApproved(null)
@@ -209,6 +237,31 @@ function App() {
   function addCustomSpan(start: number, end: number) {
     const id = `c${customSpans.length}`
     setCustomSpans((prev) => [...prev, { id, start, end, type: 'CUSTOM' }])
+  }
+
+  /** Feed confirmed OCR rows into the normal redaction flow as a new doc. */
+  async function onScanConfirm(rows: OcrRow[], label: string): Promise<void> {
+    const id = `${label}::${Date.now()}`
+    const text = rowsToText(rows)
+    const labResults = rowsToLabResults(rows)
+    setScanning(null)
+    setDocId(id)
+    setDocLabel(label)
+    setDocDate(null)
+    setDocText(text)
+    setResults(labResults)
+    setRemovedIds(new Set())
+    setCustomSpans([])
+    setApproved(null)
+    // Redaction for the scanned page (Nano names layer when available).
+    let useNano = false
+    try {
+      useNano = await isOnDeviceAvailable()
+    } catch {
+      useNano = false
+    }
+    const detected = await detectRedactions(text, { useNano })
+    setSpans(detected)
   }
 
   async function onApprove() {
@@ -293,12 +346,25 @@ function App() {
           )}
         </p>
         <label>
-          <p>Choose a medical record PDF:</p>
-          <input type="file" accept="application/pdf" onChange={onFileChange} />
+          <p>Choose a medical record PDF or a photo of one:</p>
+          <input
+            type="file"
+            accept="application/pdf,image/*"
+            onChange={onFileChange}
+          />
         </label>
 
         {parsing && <p role="status">Reading document locally…</p>}
         {error && <p role="alert">{error}</p>}
+
+        {scanning !== null && (
+          <ScanPanel
+            queue={getScanQueue()}
+            pendingLabel={scanning}
+            onConfirm={(rows, label) => void onScanConfirm(rows, label)}
+            onCancel={() => setScanning(null)}
+          />
+        )}
 
         {docs.length > 0 && (
           <p className="review-hint">
