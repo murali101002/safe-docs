@@ -164,6 +164,30 @@ The hybrid part of Firebase AI Logic's hybrid inference:
   + a reachability ping (`src/components/connection.ts`). Every answer
   carries a per-answer badge: "Ran on-device/cloud: \<reason\>".
 
+## Photo scanning (feature 08, stretch)
+
+A photo of a lab page can be read entirely on-device — the image **never**
+leaves the computer:
+
+- **Background queue** (`src/ocr/scanQueue.ts`): photos are processed one
+  at a time; each is downscaled/re-encoded in an **image Web Worker**
+  (`OffscreenCanvas`, `src/ocr/image.worker.ts`) so the UI never blocks.
+  A browser Notification fires when the queue drains.
+- **On-device vision only**: the image is sent to Chrome's on-device model
+  via `generateOnDevice` (`ONLY_ON_DEVICE`, inline image part). If the
+  on-device model is unavailable the scan fails with "Photo scanning needs
+  on-device AI in Chrome; please upload a text PDF" — the image is never
+  sent to the cloud (guard-tested).
+- **Strict numbers**: the model is instructed to copy numbers EXACTLY as
+  printed — a misread number is a **failure**, never auto-corrected.
+- **Confirm extracted values** (`src/ocr/ScanPanel.tsx`): every read row is
+  shown in a table where the user can untick junk rows and fix values
+  inline; only confirmed rows continue into the standard redaction review.
+- **Golden accuracy tests** (`tests/ocr/golden.test.ts`): clean canned
+  renders must match the F3 fixture expectations (≥95% required — we hold
+  100%); simulated "phone photo" noise (5→3, 0→8, 1→7 digit confusions)
+  produces counted failures, demonstrating why the confirm step exists.
+
 ## Getting started
 
 ```bash
