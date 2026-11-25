@@ -130,6 +130,40 @@ airplane mode**, and none of these paths can reach the cloud (guard-tested):
   never diagnose; if the context doesn't contain the answer, say so), and
   every displayed answer carries the "not medical advice" disclaimer.
 
+## Hybrid routing + cloud (feature 07)
+
+The hybrid part of Firebase AI Logic's hybrid inference:
+
+- **Remote Config keys** (`src/ai/routerConfig.ts`, defaults in
+  `src/firebase.ts`): `local_max_tokens` (3000), `cloud_enabled` (false —
+  cloud is an opt-in), `min_confidence` (0.35 retrieval-score floor for a
+  low-confidence note).
+- **Router** (`src/ai/router.ts`, pure + tested): offline → on-device with a
+  "limited" note; cloud disabled → on-device; on-device AI unavailable →
+  cloud; trend questions (`isTrendQuestion`) or multi-document retrieval →
+  cloud; context over `local_max_tokens` → cloud; everything else → on-device.
+- **Cloud Q&A** (`src/ai/cloud.ts` + `hybridAsk.ts`): the retrieved redacted
+  chunks of every approved document are assembled into one `RedactedText`
+  (`assembleCloudContext` renumbers colliding tokens across documents and
+  merges the token maps), sent through `sendToCloud` (the branded choke
+  point; the prompt is previewed in the UI), and the answer is **rehydrated
+  locally** with the merged map. A failing on-device answer (empty / no
+  citation) escalates to the cloud when allowed.
+- **Opt-in sync** (`src/sync/firestoreSync.ts`): redacted chunks + structured
+  lab rows go to `users/{uid}/documents/{docId}` only when the user opts in
+  and is signed in; the token map never syncs (guard-tested payload). The
+  app works fully in **local-only mode signed out**.
+- **Local document registry** (`src/sync/docStore.ts`): approved documents
+  stay in IndexedDB and power cross-document retrieval + trends offline.
+- **Trend chart** (`src/sync/TrendsPanel.tsx`, recharts): values per test
+  across collection dates with the latest reference range drawn in.
+- **Status banner states**: green "On-device: nothing leaves this
+  computer", blue "Cloud: sending redacted text only" with a "see what's
+  sent" prompt preview, yellow "Offline: answers limited to on-device",
+  orange "On-device AI unavailable" — driven by `navigator.onLine` + events
+  + a reachability ping (`src/components/connection.ts`). Every answer
+  carries a per-answer badge: "Ran on-device/cloud: \<reason\>".
+
 ## Getting started
 
 ```bash

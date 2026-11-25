@@ -184,3 +184,61 @@ export function rehydrate(text: string, tokenMap: TokenMap): string {
   }
   return out
 }
+
+/* ------------------------------------------------------------------ */
+/* Multi-document cloud context                                        */
+/* ------------------------------------------------------------------ */
+
+/** One approved document's in-scope content for a cloud request. */
+export interface CloudContextDoc {
+  docId: string
+  /** Already-labeled redacted text for this doc's retrieved chunks. */
+  text: string
+  tokenMap: TokenMap
+}
+
+const TOKEN_PATTERN = /\[([A-Z]+)_(\d+)\]/g
+
+/**
+ * Combine several approved documents into ONE RedactedText for a cloud
+ * request. Token numbers are re-assigned globally (doc A's [NAME_1] and doc
+ * B's [NAME_1] must not collide), and the merged token map rehydrates the
+ * cloud answer locally. This lives in the redact module on purpose: only
+ * approved redacted text may enter, so the brand invariant holds.
+ */
+export function assembleCloudContext(docs: CloudContextDoc[]): {
+  redacted: RedactedText
+  tokenMap: TokenMap
+} {
+  const usable = docs.filter((doc) => doc.text.trim() !== '')
+  if (usable.length === 0) {
+    throw new Error('no approved redacted content available for the cloud request')
+  }
+
+  const counters = new Map<string, number>()
+  const tokenMap: TokenMap = []
+  const sections: string[] = []
+
+  for (const doc of usable) {
+    const renumber = new Map<string, string>()
+    for (const entry of doc.tokenMap) {
+      const n = (counters.get(entry.type) ?? 0) + 1
+      counters.set(entry.type, n)
+      const token = tokenFor(entry.type, n)
+      renumber.set(entry.token, token)
+      tokenMap.push({ token, type: entry.type, value: entry.value })
+    }
+    const text = doc.text.replace(TOKEN_PATTERN, (whole, type: string, num: string) => {
+      return renumber.get(`[${type}_${num}]`) ?? whole
+    })
+    sections.push(text)
+  }
+
+  return {
+    redacted: createRedactedText({
+      text: sections.join('\n\n'),
+      docId: usable.map((doc) => doc.docId).join('+'),
+    }),
+    tokenMap,
+  }
+}

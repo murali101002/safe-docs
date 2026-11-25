@@ -20,6 +20,8 @@ import {
 export const REMOTE_CONFIG_DEFAULTS: Record<string, string | number | boolean> =
   {
     local_max_tokens: 3000,
+    cloud_enabled: false,
+    min_confidence: 0.35,
   }
 
 const env = import.meta.env

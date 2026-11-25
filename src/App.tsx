@@ -11,10 +11,15 @@ import { detectRedactions, approveRedactions, type ApprovedRedaction } from './r
 import { RedactionReview } from './redact/RedactionReview'
 import { saveTokenMap } from './redact/tokenStore'
 import type { RedactionSpan } from './redact/types'
-import { chunkLines, type Chunk } from './retrieval/chunk'
 import { createEmbedder, type Embedder } from './retrieval/embedder'
-import { buildIndex, type BuildResult } from './retrieval/indexer'
+import { buildIndex } from './retrieval/indexer'
+import { chunkLines, type Chunk } from './retrieval/chunk'
 import { IntelligencePanel } from './intelligence/IntelligencePanel'
+import { loadRouterConfig, ROUTER_DEFAULTS, type RouterConfig } from './ai/routerConfig'
+import { askHybrid, type AskOutcome, type AskScopeDoc } from './ai/hybridAsk'
+import { listApprovedDocs, saveApprovedDoc, type StoredDoc } from './sync/docStore'
+import { firebaseSyncAdapter, syncDocument } from './sync/firestoreSync'
+import { TrendsPanel } from './sync/TrendsPanel'
 
 /**
  * The transformers.js worker spawns on first use; keep one instance for the
@@ -26,11 +31,15 @@ function getEmbedder(): Embedder {
   return sessionEmbedder
 }
 
+const SYNC_OPT_IN_KEY = 'safedocs_sync_opt_in'
+
 function App() {
   const { user, loading, signOut } = useAuth()
+  const [showAuth, setShowAuth] = useState(false)
   const [results, setResults] = useState<LabResult[]>([])
   const [docDate, setDocDate] = useState<string | null>(null)
   const [docId, setDocId] = useState<string | null>(null)
+  const [docLabel, setDocLabel] = useState<string | null>(null)
   const [docText, setDocText] = useState<string | null>(null)
   const [spans, setSpans] = useState<RedactionSpan[]>([])
   const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set())
@@ -40,8 +49,88 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
 
-  // Wait for the initial auth state before deciding what to render,
-  // so a signed-in user never sees the auth screen flash.
+  // On-device capability + router config.
+  const [onDeviceAvailable, setOnDeviceAvailable] = useState<boolean | null>(null)
+  const [config, setConfig] = useState<RouterConfig>(ROUTER_DEFAULTS)
+
+  // Local document registry + opt-in cloud sync.
+  const [docs, setDocs] = useState<StoredDoc[]>([])
+  const [syncOptIn, setSyncOptIn] = useState<boolean>(
+    () => localStorage.getItem(SYNC_OPT_IN_KEY) === 'true',
+  )
+  const [syncStatus, setSyncStatus] = useState<string | null>(null)
+
+  // Retrieval index is owned by RetrievalSection (built per approved doc).
+
+  // Last answer info for the banner.
+  const [lastRun, setLastRun] = useState<{
+    target: 'device' | 'cloud'
+    cloudPreview?: string
+  } | null>(null)
+
+  const refreshDocs = useCallback(async () => {
+    setDocs(await listApprovedDocs())
+  }, [])
+
+  useEffect(() => {
+    // Kick startup loads off after the render commits (queueMicrotask keeps
+    // the setState calls out of the synchronous effect body).
+    queueMicrotask(() => {
+      void refreshDocs()
+      void isOnDeviceAvailable()
+        .then(setOnDeviceAvailable)
+        .catch(() => setOnDeviceAvailable(false))
+      void loadRouterConfig().then(setConfig)
+    })
+  }, [refreshDocs])
+
+  useEffect(() => {
+    localStorage.setItem(SYNC_OPT_IN_KEY, syncOptIn ? 'true' : 'false')
+  }, [syncOptIn])
+
+  const onRan = useCallback(
+    (info: { target: 'device' | 'cloud'; cloudPreview?: string }) => {
+      setLastRun({ target: info.target, cloudPreview: info.cloudPreview })
+    },
+    [],
+  )
+
+  /**
+   * Hybrid ask: retrieval across ALL approved docs, routing, quality gate,
+   * escalation, and local rehydration (see src/ai/hybridAsk.ts).
+   */
+  const ask = useCallback(
+    async (question: string): Promise<AskOutcome> => {
+      let scope: AskScopeDoc[] = docs.map((doc) => ({
+        docId: doc.docId,
+        docDate: doc.docDate,
+        redactedText: doc.redactedText,
+        labResults: doc.labResults,
+      }))
+      if (scope.length === 0 && approved !== null && docId !== null) {
+        scope = [
+          {
+            docId,
+            docDate,
+            redactedText: approved.redacted.text,
+            labResults: results,
+          },
+        ]
+      }
+      return askHybrid({
+        question,
+        scope,
+        config,
+        online: navigator.onLine,
+        onDeviceAvailable: onDeviceAvailable ?? true,
+        embedder: getEmbedder(),
+      })
+    },
+    [docs, approved, docId, docDate, results, config, onDeviceAvailable],
+  )
+
+  // --- Conditional rendering starts here (all hooks above) ---
+
   if (loading) {
     return (
       <main>
@@ -51,9 +140,13 @@ function App() {
     )
   }
 
-  if (!user) {
+  if (showAuth) {
     return <AuthScreen />
   }
+
+  const trendRows = docs.flatMap((doc) =>
+    doc.labResults.map((result) => ({ result, docId: doc.docId, docDate: doc.docDate })),
+  )
 
   async function onFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
@@ -70,6 +163,7 @@ function App() {
       setDocDate(parseDocDate(grouped))
       setDocText(text)
       setDocId(id)
+      setDocLabel(file.name)
       setRemovedIds(new Set())
       setCustomSpans([])
 
@@ -80,6 +174,7 @@ function App() {
       } catch {
         useNano = false
       }
+      setOnDeviceAvailable(useNano)
       setNanoNote(
         useNano
           ? null
@@ -94,6 +189,7 @@ function App() {
       setDocDate(null)
       setDocText(null)
       setDocId(null)
+      setDocLabel(null)
       setSpans([])
       setError(err instanceof Error ? err.message : 'Failed to read PDF')
     } finally {
@@ -116,7 +212,7 @@ function App() {
   }
 
   async function onApprove() {
-    if (docText === null || docId === null) return
+    if (docText === null || docId === null || docLabel === null) return
     const all = [...spans, ...customSpans]
     const approvedRedaction = approveRedactions(
       docText,
@@ -124,26 +220,77 @@ function App() {
       all,
       new Set(all.map((s) => s.id).filter((id) => !removedIds.has(id))),
     )
-    // Token map stays on this device (IndexedDB). Nothing is synced.
+    // Token map + document stay on this device (IndexedDB). Nothing is
+    // sent anywhere unless the user opted into sync.
     await saveTokenMap(docId, approvedRedaction.tokenMap)
+    await saveApprovedDoc({
+      docId,
+      label: docLabel,
+      docDate,
+      redactedText: approvedRedaction.redacted.text,
+      labResults: results,
+    })
+    await refreshDocs()
+    if (user !== null && syncOptIn) {
+      await syncCurrentDoc(approvedRedaction)
+    }
     setApproved(approvedRedaction)
+  }
+
+  async function syncCurrentDoc(approvedRedaction: ApprovedRedaction): Promise<void> {
+    if (user === null || docId === null || docLabel === null) return
+    setSyncStatus('Syncing redacted content…')
+    try {
+      const docChunks = chunkLines({
+        docId,
+        lines: approvedRedaction.redacted.text.split('\n'),
+      })
+      await syncDocument(await firebaseSyncAdapter(), user.uid, {
+        docId,
+        label: docLabel,
+        docDate,
+        chunks: docChunks,
+        labResults: results,
+      })
+      setSyncStatus('Synced redacted chunks + lab rows to your account.')
+    } catch (err) {
+      setSyncStatus(
+        `Sync failed: ${err instanceof Error ? err.message : 'unknown error'} — ` +
+          'your data stays local.',
+      )
+    }
   }
 
   return (
     <>
-      <StatusBanner inference="device" />
+      <StatusBanner
+        inference={lastRun?.target}
+        onDeviceAvailable={onDeviceAvailable}
+        cloudPreview={lastRun?.cloudPreview}
+      />
       <main>
         <h1>SafeDocs</h1>
         <p>
           Privacy-first: your PDF is parsed locally, and anything that may
           contain personal information runs only on Chrome&apos;s on-device
-          model. Nothing leaves this computer.
+          model. Cloud answers use approved redacted text only.
         </p>
         <p>
-          Signed in.{' '}
-          <button type="button" onClick={() => void signOut()}>
-            Sign out
-          </button>
+          {user ? (
+            <>
+              Signed in.{' '}
+              <button type="button" onClick={() => void signOut()}>
+                Sign out
+              </button>
+            </>
+          ) : (
+            <>
+              Local-only mode — everything works on this computer.{' '}
+              <button type="button" onClick={() => setShowAuth(true)}>
+                Sign in
+              </button>
+            </>
+          )}
         </p>
         <label>
           <p>Choose a medical record PDF:</p>
@@ -153,10 +300,17 @@ function App() {
         {parsing && <p role="status">Reading document locally…</p>}
         {error && <p role="alert">{error}</p>}
 
-        {docId && !parsing && (
+        {docs.length > 0 && (
+          <p className="review-hint">
+            {docs.length} approved document{docs.length === 1 ? '' : 's'} on
+            this device (search and trends cover all of them).
+          </p>
+        )}
+
+        {docId !== null && !parsing && (
           <>
             <p>
-              <strong>{docId.split('::')[0]}</strong>
+              <strong>{docLabel ?? docId.split('::')[0]}</strong>
               {docDate && <> — collected {docDate}</>} — {results.length} lab
               values parsed
             </p>
@@ -170,10 +324,34 @@ function App() {
                 <section aria-labelledby="approved-heading" className="approved-box">
                   <h3 id="approved-heading">Redactions approved ✓</h3>
                   <p role="status">
-                    The token map is stored only on this device. Nothing has
-                    been sent anywhere — cloud features (coming next) can only
-                    use the redacted text below.
+                    The token map and document are stored only on this device.
                   </p>
+                  {user ? (
+                    <label className="sync-toggle">
+                      <input
+                        type="checkbox"
+                        checked={syncOptIn}
+                        onChange={(e) => setSyncOptIn(e.target.checked)}
+                      />
+                      Sync redacted chunks + lab rows to my Firebase account
+                      (no token map, no raw values)
+                    </label>
+                  ) : (
+                    <p className="review-hint">
+                      Local-only mode — sign in to enable optional sync.
+                    </p>
+                  )}
+                  {user !== null && syncOptIn && (
+                    <p>
+                      <button
+                        type="button"
+                        onClick={() => void syncCurrentDoc(approved)}
+                      >
+                        Sync this document now
+                      </button>
+                    </p>
+                  )}
+                  {syncStatus && <p role="status">{syncStatus}</p>}
                   <details>
                     <summary>See exactly what the cloud would receive</summary>
                     <pre className="redacted-preview">{approved.redacted.text}</pre>
@@ -186,6 +364,9 @@ function App() {
                   docDate={docDate}
                   labResults={results}
                   approvedText={approved.redacted.text}
+                  ask={ask}
+                  onRan={onRan}
+                  trendRows={trendRows}
                 />
               </>
             ) : (
@@ -209,21 +390,28 @@ function App() {
 
 /**
  * Builds the on-device retrieval index over the approved REDACTED text
- * (vectors live in IndexedDB on this device) and renders the search panel.
+ * (vectors live in IndexedDB on this device), then renders the intelligence
+ * panel (routed ask) and the trend chart across all approved documents.
  */
 function RetrievalSection({
   docId,
   docDate,
   labResults,
   approvedText,
+  ask,
+  onRan,
+  trendRows,
 }: {
   docId: string
   docDate: string | null
   labResults: LabResult[]
   approvedText: string
+  ask: (question: string) => Promise<AskOutcome>
+  onRan: (info: { target: 'device' | 'cloud'; cloudPreview?: string }) => void
+  trendRows: Array<{ result: LabResult; docId: string; docDate: string | null }>
 }) {
   const [chunks, setChunks] = useState<Chunk[]>([])
-  const [index, setIndex] = useState<BuildResult | null>(null)
+  const [indexReady, setIndexReady] = useState(false)
   const [indexError, setIndexError] = useState<string | null>(null)
   // Indexing starts immediately on mount (the effect kicks it off).
   const [indexing, setIndexing] = useState(true)
@@ -231,13 +419,12 @@ function RetrievalSection({
   const build = useCallback(async () => {
     try {
       const docChunks = chunkLines({ docId, lines: approvedText.split('\n') })
-      const result = await buildIndex(docChunks, getEmbedder())
+      await buildIndex(docChunks, getEmbedder())
       setChunks(docChunks)
-      setIndex(result)
       setIndexError(null)
+      setIndexReady(true)
     } catch (err) {
       setChunks([])
-      setIndex(null)
       setIndexError(
         err instanceof Error ? err.message : 'On-device indexing unavailable.',
       )
@@ -247,37 +434,52 @@ function RetrievalSection({
   }, [docId, approvedText])
 
   useEffect(() => {
-    // Kick the build off after the render commits (queueMicrotask keeps the
-    // setState calls out of the synchronous effect body).
     queueMicrotask(() => void build())
   }, [build])
 
-  if (indexing) {
-    return <p role="status" className="search-panel">Indexing on-device…</p>
-  }
-  if (indexError !== null) {
-    return (
-      <p role="status" className="search-panel">
-        On-device search is unavailable ({indexError}). The embedding model
-        downloads once; try again while online.
-      </p>
-    )
-  }
-  if (index === null || chunks.length === 0) {
-    return null
-  }
-
+  const docChunks = chunks.length > 0
+    ? chunks
+    : chunkLines({ docId, lines: approvedText.split('\n') })
   const labRows = labResults.map((result) => ({ result, docId, docDate }))
 
+  if (indexing) {
+    return <p role="status" className="intel-panel">Indexing on-device…</p>
+  }
+
+  if (indexError !== null || !indexReady) {
+    return (
+      <>
+        {indexError !== null && (
+          <p role="status" className="intel-panel">
+            On-device search is unavailable ({indexError}). The embedding model
+            downloads once; try again while online.
+          </p>
+        )}
+        <IntelligencePanel
+          docId={docId}
+          chunks={docChunks}
+          ask={async () => {
+            throw new Error(
+              'the on-device index is unavailable — answers are disabled until the model is cached',
+            )
+          }}
+          labRows={labRows}
+        />
+      </>
+    )
+  }
+
   return (
-    <IntelligencePanel
-      docId={docId}
-      docDate={docDate}
-      chunks={chunks}
-      index={index}
-      embedder={getEmbedder()}
-      labRows={labRows}
-    />
+    <>
+      <IntelligencePanel
+        docId={docId}
+        chunks={docChunks}
+        ask={ask}
+        onRan={onRan}
+        labRows={labRows}
+      />
+      <TrendsPanel labRows={trendRows} />
+    </>
   )
 }
 
