@@ -50,6 +50,42 @@ like "19:1") are never guessed — they are handed to on-device cleanup
 (`src/labs/nanoCleanup.ts`) and discarded if the model's JSON fails
 validation.
 
+## Redaction: how PII stays on this computer
+
+Raw document text never reaches the cloud. Two detection layers run
+entirely on-device:
+
+1. **Layer 1 — deterministic regex** (`src/redact/regex.ts`): SSN, phone,
+   email, DOB, MRN, insurance/member IDs, street addresses (with optional
+   city/state/ZIP), contextual ZIP codes, and the `Patient: <name>` line.
+   The synthetic-PPI corpus test requires **100% recall** on every class.
+2. **Layer 2 — on-device Gemini Nano** (`src/redact/nanoRedact.ts`): finds
+   person names and addresses in context via `generateOnDevice()`
+   (`InferenceMode.ONLY_ON_DEVICE`); strict JSON, zod-validated, bad output
+   discarded. If the on-device model is unavailable the app says so and
+   relies on layer 1 plus manual redaction.
+
+Other dates (collection/report dates) are deliberately **kept**: the trend
+feature needs them and a date alone is not an identifier. DOB is always
+redacted. Anything else can be redacted manually.
+
+**Review before anything is shared** (`src/redact/RedactionReview.tsx`):
+every detection is highlighted; the user removes or adds redactions; only
+`Approve` produces the token map. Approved output replaces each PII value
+with tokens like `[NAME_1]`, `[DOB_1]` — repeated values share one token.
+
+**The cloud choke point** (`src/ai/cloud.ts`): `sendToCloud()` only accepts
+`RedactedText` — a branded type whose construction is confined to the
+redact module (`src/redact/brand.ts`), enforced at compile time (unexported
+`unique symbol` brand) and at run time (module-private token verified by
+`requireRedacted()`; the guard test forges a raw string past the type
+system and proves the runtime gate still blocks it). User-typed questions
+are additionally scrubbed through the layer-1 regexes.
+
+**Token maps stay on-device** (`src/redact/tokenStore.ts`, IndexedDB via
+`idb`): `rehydrate(text, tokenMap)` swaps real values back into cloud
+answers locally; the store never imports Firebase (guard-tested).
+
 ## Getting started
 
 ```bash

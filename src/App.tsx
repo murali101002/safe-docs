@@ -3,19 +3,28 @@ import './App.css'
 import { AuthScreen } from './auth/AuthScreen'
 import { useAuth } from './auth/useAuth'
 import { StatusBanner } from './components/StatusBanner'
-import { extractTextItems, groupRows, type PdfRow } from './pdf/extract'
+import { extractTextItems, groupRows } from './pdf/extract'
 import { parseDocDate, parseLabResults, type LabResult } from './labs/parseRows'
 import { LabResultsTable } from './labs/LabResultsTable'
-import { generateOnDevice } from './ai/hybrid'
+import { isOnDeviceAvailable } from './ai/hybrid'
+import { detectRedactions, approveRedactions, type ApprovedRedaction } from './redact/pipeline'
+import { RedactionReview } from './redact/RedactionReview'
+import { saveTokenMap } from './redact/tokenStore'
+import type { RedactionSpan } from './redact/types'
 
 function App() {
   const { user, loading, signOut } = useAuth()
-  const [rows, setRows] = useState<PdfRow[]>([])
   const [results, setResults] = useState<LabResult[]>([])
   const [docDate, setDocDate] = useState<string | null>(null)
-  const [fileName, setFileName] = useState<string | null>(null)
+  const [docId, setDocId] = useState<string | null>(null)
+  const [docText, setDocText] = useState<string | null>(null)
+  const [spans, setSpans] = useState<RedactionSpan[]>([])
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set())
+  const [customSpans, setCustomSpans] = useState<RedactionSpan[]>([])
+  const [approved, setApproved] = useState<ApprovedRedaction | null>(null)
+  const [nanoNote, setNanoNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [answer, setAnswer] = useState<string | null>(null)
+  const [parsing, setParsing] = useState(false)
 
   // Wait for the initial auth state before deciding what to render,
   // so a signed-in user never sees the auth screen flash.
@@ -36,39 +45,74 @@ function App() {
     const file = event.target.files?.[0]
     if (!file) return
     setError(null)
+    setParsing(true)
+    setApproved(null)
     try {
       const items = await extractTextItems(await file.arrayBuffer())
       const grouped = groupRows(items)
-      setRows(grouped)
+      const text = grouped.map((row) => row.map((c) => c.text).join(' ')).join('\n')
+      const id = `${file.name}::${file.size}`
       setResults(parseLabResults(grouped))
       setDocDate(parseDocDate(grouped))
-      setFileName(file.name)
-      setAnswer(null)
+      setDocText(text)
+      setDocId(id)
+      setRemovedIds(new Set())
+      setCustomSpans([])
+
+      // Layer 2 (names/addresses) needs Chrome's on-device model.
+      let useNano = false
+      try {
+        useNano = await isOnDeviceAvailable()
+      } catch {
+        useNano = false
+      }
+      setNanoNote(
+        useNano
+          ? null
+          : 'On-device AI is unavailable, so person names are not auto-detected. ' +
+              'Redact them by selecting the text below.',
+      )
+
+      const detected = await detectRedactions(text, { useNano })
+      setSpans(detected)
     } catch (err) {
-      setRows([])
       setResults([])
       setDocDate(null)
-      setFileName(null)
+      setDocText(null)
+      setDocId(null)
+      setSpans([])
       setError(err instanceof Error ? err.message : 'Failed to read PDF')
+    } finally {
+      setParsing(false)
     }
   }
 
-  async function onExplain() {
-    setError(null)
-    setAnswer(null)
-    try {
-      const prompt =
-        `You help patients understand their medical record. ` +
-        `Explain the following document extract in plain language. ` +
-        `Document "${fileName ?? 'record.pdf'}":\n` +
-        rows.map((row) => row.map((cell) => cell.text).join(' | ')).join('\n')
-      // Raw rows may contain PII, so this runs on-device ONLY — it must
-      // never fall back to the cloud (redaction arrives in feature 04).
-      const { text } = await generateOnDevice(prompt)
-      setAnswer(text)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI request failed')
-    }
+  function toggleSpan(spanId: string) {
+    setRemovedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(spanId)) next.delete(spanId)
+      else next.add(spanId)
+      return next
+    })
+  }
+
+  function addCustomSpan(start: number, end: number) {
+    const id = `c${customSpans.length}`
+    setCustomSpans((prev) => [...prev, { id, start, end, type: 'CUSTOM' }])
+  }
+
+  async function onApprove() {
+    if (docText === null || docId === null) return
+    const all = [...spans, ...customSpans]
+    const approvedRedaction = approveRedactions(
+      docText,
+      docId,
+      all,
+      new Set(all.map((s) => s.id).filter((id) => !removedIds.has(id))),
+    )
+    // Token map stays on this device (IndexedDB). Nothing is synced.
+    await saveTokenMap(docId, approvedRedaction.tokenMap)
+    setApproved(approvedRedaction)
   }
 
   return (
@@ -92,20 +136,48 @@ function App() {
           <input type="file" accept="application/pdf" onChange={onFileChange} />
         </label>
 
-        {fileName && (
-          <p>
-            <strong>{fileName}</strong>
-            {docDate && <> — collected {docDate}</>} — {results.length} lab
-            values parsed
-            <button type="button" onClick={onExplain}>
-              Explain this document (on-device)
-            </button>
-          </p>
-        )}
+        {parsing && <p role="status">Reading document locally…</p>}
         {error && <p role="alert">{error}</p>}
-        {answer && <pre className="answer">{answer}</pre>}
 
-        {fileName && <LabResultsTable results={results} />}
+        {docId && !parsing && (
+          <>
+            <p>
+              <strong>{docId.split('::')[0]}</strong>
+              {docDate && <> — collected {docDate}</>} — {results.length} lab
+              values parsed
+            </p>
+
+            <LabResultsTable results={results} />
+
+            {nanoNote && <p role="status">{nanoNote}</p>}
+
+            {approved ? (
+              <section aria-labelledby="approved-heading" className="approved-box">
+                <h3 id="approved-heading">Redactions approved ✓</h3>
+                <p role="status">
+                  The token map is stored only on this device. Nothing has
+                  been sent anywhere — cloud features (coming next) can only
+                  use the redacted text below.
+                </p>
+                <details>
+                  <summary>See exactly what the cloud would receive</summary>
+                  <pre className="redacted-preview">{approved.redacted.text}</pre>
+                </details>
+              </section>
+            ) : (
+              docText !== null && (
+                <RedactionReview
+                  text={docText}
+                  spans={[...spans, ...customSpans]}
+                  removedIds={removedIds}
+                  onToggle={toggleSpan}
+                  onAddCustom={addCustomSpan}
+                  onApprove={() => void onApprove()}
+                />
+              )
+            )}
+          </>
+        )}
       </main>
     </>
   )
