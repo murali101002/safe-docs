@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { AuthScreen } from './auth/AuthScreen'
 import { useAuth } from './auth/useAuth'
@@ -11,6 +11,20 @@ import { detectRedactions, approveRedactions, type ApprovedRedaction } from './r
 import { RedactionReview } from './redact/RedactionReview'
 import { saveTokenMap } from './redact/tokenStore'
 import type { RedactionSpan } from './redact/types'
+import { chunkLines, type Chunk } from './retrieval/chunk'
+import { createEmbedder, type Embedder } from './retrieval/embedder'
+import { buildIndex, type BuildResult } from './retrieval/indexer'
+import { SearchPanel } from './retrieval/SearchPanel'
+
+/**
+ * The transformers.js worker spawns on first use; keep one instance for the
+ * whole session (module-level, not per render).
+ */
+let sessionEmbedder: Embedder | null = null
+function getEmbedder(): Embedder {
+  sessionEmbedder ??= createEmbedder()
+  return sessionEmbedder
+}
 
 function App() {
   const { user, loading, signOut } = useAuth()
@@ -152,18 +166,28 @@ function App() {
             {nanoNote && <p role="status">{nanoNote}</p>}
 
             {approved ? (
-              <section aria-labelledby="approved-heading" className="approved-box">
-                <h3 id="approved-heading">Redactions approved ✓</h3>
-                <p role="status">
-                  The token map is stored only on this device. Nothing has
-                  been sent anywhere — cloud features (coming next) can only
-                  use the redacted text below.
-                </p>
-                <details>
-                  <summary>See exactly what the cloud would receive</summary>
-                  <pre className="redacted-preview">{approved.redacted.text}</pre>
-                </details>
-              </section>
+              <>
+                <section aria-labelledby="approved-heading" className="approved-box">
+                  <h3 id="approved-heading">Redactions approved ✓</h3>
+                  <p role="status">
+                    The token map is stored only on this device. Nothing has
+                    been sent anywhere — cloud features (coming next) can only
+                    use the redacted text below.
+                  </p>
+                  <details>
+                    <summary>See exactly what the cloud would receive</summary>
+                    <pre className="redacted-preview">{approved.redacted.text}</pre>
+                  </details>
+                </section>
+
+                <RetrievalSection
+                  key={approved.redacted.docId}
+                  docId={approved.redacted.docId}
+                  docDate={docDate}
+                  labResults={results}
+                  approvedText={approved.redacted.text}
+                />
+              </>
             ) : (
               docText !== null && (
                 <RedactionReview
@@ -180,6 +204,79 @@ function App() {
         )}
       </main>
     </>
+  )
+}
+
+/**
+ * Builds the on-device retrieval index over the approved REDACTED text
+ * (vectors live in IndexedDB on this device) and renders the search panel.
+ */
+function RetrievalSection({
+  docId,
+  docDate,
+  labResults,
+  approvedText,
+}: {
+  docId: string
+  docDate: string | null
+  labResults: LabResult[]
+  approvedText: string
+}) {
+  const [chunks, setChunks] = useState<Chunk[]>([])
+  const [index, setIndex] = useState<BuildResult | null>(null)
+  const [indexError, setIndexError] = useState<string | null>(null)
+  // Indexing starts immediately on mount (the effect kicks it off).
+  const [indexing, setIndexing] = useState(true)
+
+  const build = useCallback(async () => {
+    try {
+      const docChunks = chunkLines({ docId, lines: approvedText.split('\n') })
+      const result = await buildIndex(docChunks, getEmbedder())
+      setChunks(docChunks)
+      setIndex(result)
+      setIndexError(null)
+    } catch (err) {
+      setChunks([])
+      setIndex(null)
+      setIndexError(
+        err instanceof Error ? err.message : 'On-device indexing unavailable.',
+      )
+    } finally {
+      setIndexing(false)
+    }
+  }, [docId, approvedText])
+
+  useEffect(() => {
+    // Kick the build off after the render commits (queueMicrotask keeps the
+    // setState calls out of the synchronous effect body).
+    queueMicrotask(() => void build())
+  }, [build])
+
+  if (indexing) {
+    return <p role="status" className="search-panel">Indexing on-device…</p>
+  }
+  if (indexError !== null) {
+    return (
+      <p role="status" className="search-panel">
+        On-device search is unavailable ({indexError}). The embedding model
+        downloads once; try again while online.
+      </p>
+    )
+  }
+  if (index === null || chunks.length === 0) {
+    return null
+  }
+
+  const labRows = labResults.map((result) => ({ result, docId, docDate }))
+
+  return (
+    <SearchPanel
+      docId={docId}
+      chunks={chunks}
+      vectors={index.vectors}
+      embedder={getEmbedder()}
+      labRows={labRows}
+    />
   )
 }
 

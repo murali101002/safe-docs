@@ -162,6 +162,43 @@ tr:nth-child(even) td {
   background: #086029;
 }
 
+.chunk-hits {
+  list-style: none;
+  padding: 0;
+}
+
+.chunk-preview {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 0.6rem;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+.search-panel {
+  margin-top: 1.5rem;
+  border: 1px solid #d8d8d8;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  background: #fff;
+}
+
+.search-panel input {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #c0c0c0;
+  border-radius: 6px;
+  font-size: 1rem;
+  min-width: 16rem;
+}
+
+.search-panel h4 {
+  margin: 0.75rem 0 0.25rem;
+}
+
 .approved-box {
   margin-top: 1.5rem;
   border: 1px solid #b7dfc2;
