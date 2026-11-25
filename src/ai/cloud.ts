@@ -1,5 +1,6 @@
 import { requireRedacted, type RedactedText } from '../redact/brand'
 import { detectRegexSpans } from '../redact/regex'
+import { SAFETY_RULES } from '../intelligence/options'
 import type { GenerativeModel } from 'firebase/ai'
 
 /**
@@ -64,9 +65,10 @@ export async function sendToCloud(
   requireRedacted(context) // runtime gate — raw text can never pass
   const scrubbed = scrubQuestion(question)
   const prompt =
-    `You help patients understand their medical records. Answer from the ` +
-    `redacted context only, cite [DOC, page] tokens when available, and ` +
-    `refuse diagnosis. Question: ${scrubbed}\n\n` +
+    `${SAFETY_RULES}\n` +
+    `- Cite every claim with its source, formatted exactly like [report.pdf, page 2].\n` +
+    `- The context below is REDACTED: values in [BRACKETS] are placeholder tokens.\n\n` +
+    `Question: ${scrubbed}\n\n` +
     `Redacted context:\n${context.text}`
   const model = await getCloudModel()
   const result = await model.generateContent(prompt)

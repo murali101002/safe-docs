@@ -1,44 +1,40 @@
 import { useCallback, useState } from 'react'
+import type { AskOutcome } from '../ai/hybridAsk'
 import type { Chunk } from '../retrieval/chunk'
-import type { Embedder } from '../retrieval/embedder'
-import type { BuildResult } from '../retrieval/indexer'
-import { embedQuery } from '../retrieval/indexer'
-import { matchLabRows, rankChunks, type LabHit, type RetrievedChunk } from '../retrieval/search'
-import { answerQuestion, ANSWER_DISCLAIMER, docLabelOf } from './qa'
+import { ANSWER_DISCLAIMER, docLabelOf } from './qa'
 import { explainLabValue } from './explain'
 import { questionsForDoctor } from './doctorQuestions'
 import { summarizeDocument, type SummaryProgress } from './summary'
 import type { LabResult } from '../labs/parseRows'
 
 /**
- * On-device intelligence panel (feature 06): Q&A with citations, document
- * summary (map-reduce with progress), per-value explanations, and
- * "questions for my doctor" — all through the on-device model, so the whole
- * panel works in airplane mode.
+ * On-device intelligence panel (feature 06/07): Q&A (routed by the hybrid
+ * router via the injected `ask` callback), document summary (map-reduce
+ * with progress), per-value explanations, and "questions for my doctor" —
+ * the local features run through the on-device model, so they work in
+ * airplane mode.
  */
 
 export interface IntelligencePanelProps {
   docId: string
-  docDate: string | null
+  /** Approved redacted chunks of the current document (for summaries). */
   chunks: Chunk[]
-  index: BuildResult
-  embedder: Embedder
+  /** Ask through the hybrid router; returns the answer + routing metadata. */
+  ask: (question: string) => Promise<AskOutcome>
+  /** Notify the app of the last answer's target/reason (for the banner). */
+  onRan?: (info: { target: 'device' | 'cloud'; reason: string; cloudPreview?: string }) => void
   labRows: Array<{ result: LabResult; docId: string; docDate: string | null }>
 }
 
-interface AnswerState {
-  text: string
-  problem?: 'empty' | 'no citation'
-  sources: RetrievedChunk[]
-  labHits: LabHit[]
+interface AnswerState extends AskOutcome {
+  question: string
 }
 
 export function IntelligencePanel({
   docId,
-  docDate,
   chunks,
-  index,
-  embedder,
+  ask,
+  onRan,
   labRows,
 }: IntelligencePanelProps) {
   const [question, setQuestion] = useState('')
@@ -67,23 +63,16 @@ export function IntelligencePanel({
     setAsking(true)
     setAskError(null)
     try {
-      const queryVector = await embedQuery(q, embedder)
-      const sources = rankChunks(q, chunks, index.vectors, queryVector, 4)
-      const labHits = matchLabRows(q, labRows, 5)
-      const result = await answerQuestion({ question: q, chunks: sources.map((s) => s.chunk), labHits })
-      setAnswer({
-        text: result.text,
-        problem: result.problem,
-        sources,
-        labHits,
-      })
+      const outcome = await ask(q)
+      setAnswer({ ...outcome, question: q })
+      onRan?.({ target: outcome.target, reason: outcome.reason, cloudPreview: outcome.cloudPreview })
     } catch (err) {
       setAskError(err instanceof Error ? err.message : 'Answering failed')
       setAnswer(null)
     } finally {
       setAsking(false)
     }
-  }, [question, asking, embedder, chunks, index.vectors, labRows])
+  }, [question, asking, ask, onRan])
 
   const onSummarize = useCallback(async () => {
     if (summaryProgress !== null) return
@@ -103,19 +92,26 @@ export function IntelligencePanel({
     }
   }, [chunks, docId, summaryProgress])
 
-  const onExplain = useCallback(async (result: LabResult) => {
-    setExplaining(result.test)
-    setExplainError(null)
-    try {
-      const { text } = await explainLabValue({ result, docId, docDate })
-      setExplanation({ test: result.test, text })
-    } catch (err) {
-      setExplainError(err instanceof Error ? err.message : 'Explaining failed')
-      setExplanation(null)
-    } finally {
-      setExplaining(null)
-    }
-  }, [docId, docDate])
+  const onExplain = useCallback(
+    async (row: { result: LabResult; docId: string; docDate: string | null }) => {
+      setExplaining(row.result.test)
+      setExplainError(null)
+      try {
+        const { text } = await explainLabValue({
+          result: row.result,
+          docId: row.docId,
+          docDate: row.docDate,
+        })
+        setExplanation({ test: row.result.test, text })
+      } catch (err) {
+        setExplainError(err instanceof Error ? err.message : 'Explaining failed')
+        setExplanation(null)
+      } finally {
+        setExplaining(null)
+      }
+    },
+    [],
+  )
 
   const onDoctorQuestions = useCallback(async () => {
     setDoctorBusy(true)
@@ -162,7 +158,26 @@ export function IntelligencePanel({
       {askError && <p role="alert">{askError}</p>}
       {answer && (
         <div className="answer-box" role="status">
-          <p className="ran-badge">🟢 Ran on-device: nothing left this computer</p>
+          {answer.target === 'cloud' ? (
+            <p className="ran-badge cloud-badge">
+              🔵 Ran in cloud: {answer.reason}
+            </p>
+          ) : (
+            <p className="ran-badge">
+              🟢 Ran on-device: {answer.reason}
+            </p>
+          )}
+          {answer.limited && (
+            <p className="answer-problem">
+              Limited mode: only the documents on this device are available.
+            </p>
+          )}
+          {answer.lowConfidence && (
+            <p className="answer-problem">
+              Low retrieval confidence — the document may not contain a clear
+              answer to this question.
+            </p>
+          )}
           {answer.problem && (
             <p className="answer-problem">
               Note: this answer {answer.problem === 'no citation' ? 'has no source citations' : 'came back empty'} —
@@ -244,7 +259,7 @@ export function IntelligencePanel({
                 (flag {row.result.flag})
                 <button
                   type="button"
-                  onClick={() => void onExplain(row.result)}
+                  onClick={() => void onExplain(row)}
                   disabled={explaining !== null}
                 >
                   {explaining === row.result.test ? 'Explaining…' : 'Explain'}

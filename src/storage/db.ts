@@ -21,6 +21,17 @@ export interface StoredEmbedding {
   vector: Float32Array
 }
 
+export interface StoredDocument {
+  docId: string
+  /** Display label (file name). */
+  label: string
+  docDate: string | null
+  /** Approved REDACTED text (tokens in place of PII). */
+  redactedText: string
+  labResults: import('../labs/parseRows').LabResult[]
+  approvedAt: number
+}
+
 interface SafeDocsDB extends DBSchema {
   tokenMaps: {
     key: string
@@ -30,10 +41,14 @@ interface SafeDocsDB extends DBSchema {
     key: string
     value: StoredEmbedding
   }
+  documents: {
+    key: string
+    value: StoredDocument
+  }
 }
 
 export const DB_NAME = 'safedocs'
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 let dbPromise: Promise<IDBPDatabase<SafeDocsDB>> | undefined
 
@@ -46,6 +61,9 @@ export function getDb(): Promise<IDBPDatabase<SafeDocsDB>> {
       }
       if (!db.objectStoreNames.contains('embeddings')) {
         db.createObjectStore('embeddings', { keyPath: 'chunkId' })
+      }
+      if (!db.objectStoreNames.contains('documents')) {
+        db.createObjectStore('documents', { keyPath: 'docId' })
       }
     },
   })
