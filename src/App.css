@@ -179,7 +179,8 @@ tr:nth-child(even) td {
   overflow-y: auto;
 }
 
-.search-panel {
+/* On-device intelligence panel (feature 06). */
+.intel-panel {
   margin-top: 1.5rem;
   border: 1px solid #d8d8d8;
   border-radius: 8px;
@@ -187,16 +188,91 @@ tr:nth-child(even) td {
   background: #fff;
 }
 
-.search-panel input {
+.intel-panel h4 {
+  margin: 0.75rem 0 0.25rem;
+}
+
+.ask-form {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.ask-form input {
+  flex: 1;
   padding: 0.45rem 0.6rem;
   border: 1px solid #c0c0c0;
   border-radius: 6px;
   font-size: 1rem;
-  min-width: 16rem;
 }
 
-.search-panel h4 {
-  margin: 0.75rem 0 0.25rem;
+.intel-row {
+  margin-top: 1rem;
+}
+
+.answer-box {
+  margin-top: 0.75rem;
+  border: 1px solid #d8e2f0;
+  background: #f7faff;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+}
+
+.ran-badge {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #0a7d33;
+}
+
+.answer-problem {
+  color: #8a5a00;
+  font-size: 0.85rem;
+  margin: 0 0 0.4rem;
+}
+
+.answer-text {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 0.95rem;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0 0 0.4rem;
+}
+
+.answer-disclaimer {
+  font-size: 0.8rem;
+  color: #555;
+  margin: 0.25rem 0 0;
+}
+
+.progress-line progress {
+  width: 14rem;
+  vertical-align: middle;
+}
+
+.flagged-list {
+  list-style: none;
+  padding: 0;
+}
+
+.flagged-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px dashed #e0e0e0;
+}
+
+.doctor-questions {
+  margin: 0.25rem 0 0.25rem 1.2rem;
+}
+
+.chunk-hits {
+  list-style: none;
+  padding: 0;
 }
 
 .approved-box {

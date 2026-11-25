@@ -108,6 +108,28 @@ After redaction approval, the approved redacted text is indexed locally:
 - Privacy: no module in the retrieval stack imports Firebase (guard
   tests); vectors and chunks stay on this device.
 
+## On-device intelligence (feature 06)
+
+Everything in `src/intelligence/` runs on Chrome's on-device Gemini Nano
+only (`generateOnDevice`, `ONLY_ON_DEVICE`) — the whole panel **works in
+airplane mode**, and none of these paths can reach the cloud (guard-tested):
+
+- **Q&A with citations**: the question is answered only from the retrieved
+  redacted chunks and structured lab rows; every answer is checked by a
+  quality gate (`checkAnswer` — empty answers and uncited answers are
+  flagged) that the F7 router will reuse for cloud fallback.
+- **Explanations**: any flagged lab row gets a plain-language explanation of
+  what the test measures and why the H/L flag may matter — without ever
+  concluding a diagnosis.
+- **Questions for my doctor**: 3–5 specific questions generated from the
+  flagged rows; strict JSON, zod-validated, unusable suggestions discarded.
+- **Map-reduce summary**: each chunk is summarized (map) with a live
+  progress bar, then the partials are combined (reduce). Failed sections
+  are skipped, never fatal.
+- **Safety**: every prompt carries the shared rules (informational only —
+  never diagnose; if the context doesn't contain the answer, say so), and
+  every displayed answer carries the "not medical advice" disclaimer.
+
 ## Getting started
 
 ```bash

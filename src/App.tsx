@@ -14,7 +14,7 @@ import type { RedactionSpan } from './redact/types'
 import { chunkLines, type Chunk } from './retrieval/chunk'
 import { createEmbedder, type Embedder } from './retrieval/embedder'
 import { buildIndex, type BuildResult } from './retrieval/indexer'
-import { SearchPanel } from './retrieval/SearchPanel'
+import { IntelligencePanel } from './intelligence/IntelligencePanel'
 
 /**
  * The transformers.js worker spawns on first use; keep one instance for the
@@ -270,10 +270,11 @@ function RetrievalSection({
   const labRows = labResults.map((result) => ({ result, docId, docDate }))
 
   return (
-    <SearchPanel
+    <IntelligencePanel
       docId={docId}
+      docDate={docDate}
       chunks={chunks}
-      vectors={index.vectors}
+      index={index}
       embedder={getEmbedder()}
       labRows={labRows}
     />
