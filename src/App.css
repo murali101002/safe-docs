@@ -99,6 +99,89 @@ tr:nth-child(even) td {
   margin-top: 0.5rem;
 }
 
+/* Redaction review (feature 04). */
+.redaction-review {
+  margin-top: 1.5rem;
+  border: 1px solid #d8d8d8;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  background: #fff;
+}
+
+.redaction-review h3 {
+  margin: 0.25rem 0;
+}
+
+.review-hint {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.redaction-text {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 0.75rem;
+  max-height: 22rem;
+  overflow-y: auto;
+  cursor: text;
+}
+
+.redaction-text mark {
+  border-radius: 4px;
+  padding: 0 0.2rem;
+}
+
+.redaction-active {
+  background: #fde7e5;
+  color: #8c1d18;
+  cursor: pointer;
+}
+
+.redaction-removed {
+  background: #f1f3f4;
+  color: #5f6368;
+  text-decoration: line-through dashed #9aa0a6;
+  cursor: pointer;
+}
+
+.selection-note {
+  font-size: 0.85rem;
+  color: #0b57d0;
+}
+
+.redaction-review button.approve {
+  background: #0a7d33;
+  border-color: #0a7d33;
+}
+
+.redaction-review button.approve:hover {
+  background: #086029;
+}
+
+.approved-box {
+  margin-top: 1.5rem;
+  border: 1px solid #b7dfc2;
+  background: #f2fbf4;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.redacted-preview {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  background: #fff;
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  padding: 0.75rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
 button {
   margin-left: 0.75rem;
   padding: 0.35rem 0.9rem;
