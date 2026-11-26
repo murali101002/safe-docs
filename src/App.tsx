@@ -12,6 +12,7 @@ import { RedactionReview } from './redact/RedactionReview'
 import { saveTokenMap } from './redact/tokenStore'
 import type { RedactionSpan } from './redact/types'
 import type { OcrRow } from './ocr/extract'
+import { Onboarding, DisclaimerFooter, EmptyState } from './components/Onboarding'
 import { createEmbedder, type Embedder } from './retrieval/embedder'
 import { buildIndex } from './retrieval/indexer'
 import { chunkLines, type Chunk } from './retrieval/chunk'
@@ -345,6 +346,9 @@ function App() {
             </>
           )}
         </p>
+
+        <Onboarding />
+
         <label>
           <p>Choose a medical record PDF or a photo of one:</p>
           <input
@@ -372,6 +376,8 @@ function App() {
             this device (search and trends cover all of them).
           </p>
         )}
+
+        {docId === null && !parsing && <EmptyState />}
 
         {docId !== null && !parsing && (
           <>
@@ -449,7 +455,8 @@ function App() {
             )}
           </>
         )}
-      </main>
+        </main>
+      <DisclaimerFooter />
     </>
   )
 }

@@ -1,30 +1,93 @@
 # SafeDocs
 
-Privacy-first web app (Chrome) that helps patients understand their medical
-record PDFs. Built for Google's **#BuildHybridAI** hackathon.
+**Privacy-first web app (Chrome) that helps patients understand their medical
+records.** Built for Google's **#BuildHybridAI** hackathon (Firebase AI Logic
+hybrid inference).
 
-PDF text and tables are extracted **locally** with pdf.js. Lab tables are
-parsed into structured results (with H/L flagging) entirely on-device, and
-rows the parser can't read are cleaned up by Chrome's on-device Gemini Nano —
-raw text is never sent to the cloud. Explanations run through Firebase AI
-Logic in hybrid mode with a status banner always saying which path ran.
+## The problem
 
-## Stack
+Lab reports and discharge summaries are written for clinicians: dense tables,
+cryptic abbreviations, reference ranges, flags. Most patients Google their
+results — pasting full reports (names, MRNs, dates of birth) into random
+websites and chatbots. SafeDocs makes the report understandable **without the
+record ever leaving the patient's computer**.
 
-- Vite + React + TypeScript
-- Firebase JS SDK: App Check (reCAPTCHA Enterprise), Auth, Firestore,
-  Remote Config, AI Logic (`firebase/ai`, hybrid inference)
-- pdf.js (`pdfjs-dist`) for local PDF text/table extraction
-- Zod for validating on-device model output
-- Vitest for unit tests
+## Value proposition
+
+- **Understand**: parsed lab tables with H/L flagging, plain-language Q&A with
+  citations, per-value explanations, "questions for my doctor", and a
+  whole-document summary.
+- **Track**: trends across visits (chart) and cross-document questions.
+- **Stay private**: on-device AI does everything sensitive. Raw text and
+  images **never** leave the computer; the cloud only ever sees redacted
+  tokens — and only after you approve and opt in.
+
+## How Firebase AI Logic hybrid inference is used
+
+| Capability | Where | Code pointer |
+| --- | --- | --- |
+| Hybrid Q&A model (`PREFER_ON_DEVICE`, cloud fallback) | understanding docs | `src/ai/hybrid.ts` (`generate`) |
+| `ONLY_ON_DEVICE` for anything possibly PII (redaction layer 2, OCR vision, all F6 intelligence) | redaction, OCR, Q&A, summaries | `src/ai/hybrid.ts` (`generateOnDevice`), `src/intelligence/*` |
+| Multimodal on-device (inline image part) | photo OCR | `src/ai/hybrid.ts` + `src/ocr/*` |
+| Cloud, gated by the branded `RedactedText` choke point | cross-doc / trend Q&A | `src/ai/cloud.ts` (`sendToCloud`), `src/ai/hybridAsk.ts` |
+| Remote Config (`local_max_tokens`, `cloud_enabled`, `min_confidence`) | routing | `src/ai/routerConfig.ts`, `src/firebase.ts` |
+| App Check (reCAPTCHA Enterprise) | every backend call | `src/firebase.ts` |
+| Firestore (owner-only rules) | opt-in sync of redacted chunks + lab rows | `src/sync/firestoreSync.ts`, `firestore.rules` |
+
+## Architecture
+
+```mermaid
+flowchart TD
+    PDF["PDF / photo (local)"] --> EXTRACT["pdf.js / image worker (local)"]
+    EXTRACT --> LABS["Lab table parser (local, golden-tested)"]
+    EXTRACT --> TEXT["Document text (local)"]
+    TEXT --> REDACT["Redaction: regex + on-device Nano"]
+    REDACT --> REVIEW["Redaction review — user approves"]
+    REVIEW -->|"creates"| BRANDED["RedactedText (branded type)"]
+    BRANDED --> CHUNKS["Chunks + MiniLM vectors (Web Worker, IndexedDB)"]
+    BRANDED --> STORE["Doc registry + token map (IndexedDB)"]
+    QUESTION["Question"] --> ROUTER{"Router (Remote Config)"}
+    ROUTER -->|"single-doc / offline / cloud off"| DEV["On-device Gemini Nano<br/>(citations + rehydrate)"]
+    ROUTER -->|"trend / multi-doc / oversize / Nano unavailable"| CLOUD["Cloud Gemini (gemini-3.8-flash)<br/>sees ONLY redacted tokens"]
+    DEV --> ANSWER["Answer + badge: Ran on-device/cloud: reason"]
+    CLOUD -->|"rehydrate locally"| ANSWER
+    STORE -.->|"opt-in sync, owner-only rules"| FS["Firestore: redacted chunks + lab rows"]
+    STORE --> TRENDS["Trend chart (recharts)"]
+```
+
+## Routing rules
+
+| Condition | Runs where | Why |
+| --- | --- | --- |
+| Offline | On-device (+ "limited" note) | No network; privacy unaffected |
+| `cloud_enabled` false | On-device | Cloud is an explicit opt-in |
+| On-device AI unavailable | Cloud | Nano missing in this browser |
+| Trend-shaped question ("over time", "compare") | Cloud | Cross-visit analysis |
+| Question spans several documents | Cloud | Cross-doc context |
+| Retrieved context > `local_max_tokens` | Cloud | Too much context for Nano |
+| Everything else | On-device | Default: nothing leaves the computer |
+
+**Privacy guarantees**
+
+1. Raw text or images never reach the cloud — the only cloud entry point is
+   `sendToCloud(redacted: RedactedText)`, a branded type only the redaction
+   module can create (compile-time `unique symbol` + runtime token, both
+   guard-tested).
+2. The token map (`[NAME_1] → real value`), original files, and embeddings
+   live in IndexedDB and never sync.
+3. Firestore (opt-in) stores redacted chunks + structured lab rows only,
+   under owner-only security rules; payload shape is guard-tested.
+4. Cloud answers are rehydrated locally, so the user reads real names but the
+   cloud never learned them.
+5. Every answer is informational, never a diagnosis, carries a
+   "not medical advice" disclaimer, and cites `[doc, page]` sources.
 
 ## Lab table extraction accuracy
 
 12 synthetic lab-report fixtures (`tests/fixtures/labs/`, generated by
-`npm run gen:fixtures`) are run through real pdf.js extraction → row
-grouping → `src/labs/parseRows.ts`, then compared field by field against
-hand-authored expected results (`tests/labs/golden.test.ts` prints this
-table):
+`npm run gen:fixtures`) run through real pdf.js extraction → row grouping →
+`src/labs/parseRows.ts`, compared field by field against hand-authored
+expectations (`tests/labs/golden.test.ts` prints this table):
 
 ```
 Lab extraction accuracy — real pdf.js -> groupRows -> parseRows
@@ -41,152 +104,59 @@ docDate        12/12           100%
 results        55/55           100%
 ```
 
-100% is required on `value`, `unit`, and `flag` (the fields patients act on);
-the fixture set covers CBC, CMP, lipid, A1C, TSH, multi-column layouts,
-wrapped test names, inline H/L/N flags, `<`/`>` ranges, comma-grouped
-numbers, embedded units, and two collection dates for trends. Rows the
-deterministic parser cannot read (word values like "Color Yellow", ratios
-like "19:1") are never guessed — they are handed to on-device cleanup
-(`src/labs/nanoCleanup.ts`) and discarded if the model's JSON fails
-validation.
+100% is required on `value`, `unit`, and `flag`; the fixtures cover CBC, CMP,
+lipid, A1C, TSH, multi-column layouts, wrapped test names, inline H/L/N
+flags, `<`/`>` ranges, comma numbers, embedded units, and two collection
+dates for trends. Unparseable rows go to on-device cleanup and are discarded
+if invalid — never guessed. Photo-scan golden tests (`tests/ocr/golden.test.ts`)
+hold clean renders to the same bar and count a wrong number as a failure.
 
 ## Redaction: how PII stays on this computer
 
-Raw document text never reaches the cloud. Two detection layers run
-entirely on-device:
-
 1. **Layer 1 — deterministic regex** (`src/redact/regex.ts`): SSN, phone,
-   email, DOB, MRN, insurance/member IDs, street addresses (with optional
-   city/state/ZIP), contextual ZIP codes, and the `Patient: <name>` line.
-   The synthetic-PPI corpus test requires **100% recall** on every class.
-2. **Layer 2 — on-device Gemini Nano** (`src/redact/nanoRedact.ts`): finds
-   person names and addresses in context via `generateOnDevice()`
-   (`InferenceMode.ONLY_ON_DEVICE`); strict JSON, zod-validated, bad output
-   discarded. If the on-device model is unavailable the app says so and
-   relies on layer 1 plus manual redaction.
+   email, DOB, MRN, insurance/member IDs, street addresses, contextual ZIPs,
+   and the `Patient: <name>` line — **100% recall** required on the corpus.
+2. **Layer 2 — on-device Gemini Nano** (`src/redact/nanoRedact.ts`): names and
+   addresses in context (`ONLY_ON_DEVICE`); strict JSON, zod-validated.
+   Other dates are deliberately kept (trends need them); DOB is always
+   redacted; anything can be redacted manually.
+3. **Review before anything is shared**: every detection is highlighted;
+   the user removes or adds redactions; only `Approve` produces the token
+   map and the branded `RedactedText`.
 
-Other dates (collection/report dates) are deliberately **kept**: the trend
-feature needs them and a date alone is not an identifier. DOB is always
-redacted. Anything else can be redacted manually.
+## Local retrieval + on-device intelligence
 
-**Review before anything is shared** (`src/redact/RedactionReview.tsx`):
-every detection is highlighted; the user removes or adds redactions; only
-`Approve` produces the token map. Approved output replaces each PII value
-with tokens like `[NAME_1]`, `[DOB_1]` — repeated values share one token.
+- Chunking (~400 tokens with overlap, page-aware) → MiniLM embeddings
+  (`onnx-community/all-MiniLM-L6-v2-ONNX`) in a Web Worker, cached in
+  IndexedDB → hybrid ranking (`0.7 × cosine + 0.3 × keyword` with lab
+  aliases) → structured lab-row matching.
+- Q&A with `[doc, page]` citations (quality-gated), lab explanations,
+  3–5 "questions for my doctor" from flagged rows, and a map-reduce summary
+  with a progress bar — all on-device, all airplane-mode-safe.
 
-**The cloud choke point** (`src/ai/cloud.ts`): `sendToCloud()` only accepts
-`RedactedText` — a branded type whose construction is confined to the
-redact module (`src/redact/brand.ts`), enforced at compile time (unexported
-`unique symbol` brand) and at run time (module-private token verified by
-`requireRedacted()`; the guard test forges a raw string past the type
-system and proves the runtime gate still blocks it). User-typed questions
-are additionally scrubbed through the layer-1 regexes.
+## Photo scanning (stretch)
 
-**Token maps stay on-device** (`src/redact/tokenStore.ts`, IndexedDB via
-`idb`): `rehydrate(text, tokenMap)` swaps real values back into cloud
-answers locally; the store never imports Firebase (guard-tested).
+Photos are read entirely on-device: preprocessed in an image Web Worker,
+read by Chrome's on-device multimodal model (`ONLY_ON_DEVICE`), with a
+background queue, progress card, Notification when done, and a
+"confirm extracted values" step before redaction. If the on-device model is
+unavailable the scan fails with "Photo scanning needs on-device AI in
+Chrome; please upload a text PDF" — the image never leaves the computer.
 
-## Local retrieval (on-device search)
+## What was built during the hackathon
 
-After redaction approval, the approved redacted text is indexed locally:
-
-- **Chunking** (`src/retrieval/chunk.ts`): line-based chunks of ~300 words
-  (~400 tokens) with ~50-word overlap; each chunk keeps its page numbers
-  for `[doc, page]` citations.
-- **Embeddings** (`src/retrieval/embedder.ts` + `embed.worker.ts`):
-  transformers.js runs `Xenova/all-MiniLM-L6-v2` (the ONNX build the
-  library docs pair with v4: `onnx-community/all-MiniLM-L6-v2-ONNX`) inside
-  a **Web Worker**, mean-pooled and L2-normalized. Vectors are cached in
-  IndexedDB and invalidated by a text hash, so re-indexing after a new
-  approval only embeds changed chunks.
-- **Hybrid ranking** (`src/retrieval/search.ts`):
-  `score = 0.7 × cosine + 0.3 × keyword overlap`, with lab vocabulary
-  (A1C, LDL, TSH, …) worth a bonus and expanded through aliases
-  (`a1c → hemoglobin a1c / HbA1c / estimated average glucose`).
-- **Structured lab queries**: questions about lab rows are matched against
-  the parsed `LabResult`s as data (value, unit, flag, date) — not prose.
-- Privacy: no module in the retrieval stack imports Firebase (guard
-  tests); vectors and chunks stay on this device.
-
-## On-device intelligence (feature 06)
-
-Everything in `src/intelligence/` runs on Chrome's on-device Gemini Nano
-only (`generateOnDevice`, `ONLY_ON_DEVICE`) — the whole panel **works in
-airplane mode**, and none of these paths can reach the cloud (guard-tested):
-
-- **Q&A with citations**: the question is answered only from the retrieved
-  redacted chunks and structured lab rows; every answer is checked by a
-  quality gate (`checkAnswer` — empty answers and uncited answers are
-  flagged) that the F7 router will reuse for cloud fallback.
-- **Explanations**: any flagged lab row gets a plain-language explanation of
-  what the test measures and why the H/L flag may matter — without ever
-  concluding a diagnosis.
-- **Questions for my doctor**: 3–5 specific questions generated from the
-  flagged rows; strict JSON, zod-validated, unusable suggestions discarded.
-- **Map-reduce summary**: each chunk is summarized (map) with a live
-  progress bar, then the partials are combined (reduce). Failed sections
-  are skipped, never fatal.
-- **Safety**: every prompt carries the shared rules (informational only —
-  never diagnose; if the context doesn't contain the answer, say so), and
-  every displayed answer carries the "not medical advice" disclaimer.
-
-## Hybrid routing + cloud (feature 07)
-
-The hybrid part of Firebase AI Logic's hybrid inference:
-
-- **Remote Config keys** (`src/ai/routerConfig.ts`, defaults in
-  `src/firebase.ts`): `local_max_tokens` (3000), `cloud_enabled` (false —
-  cloud is an opt-in), `min_confidence` (0.35 retrieval-score floor for a
-  low-confidence note).
-- **Router** (`src/ai/router.ts`, pure + tested): offline → on-device with a
-  "limited" note; cloud disabled → on-device; on-device AI unavailable →
-  cloud; trend questions (`isTrendQuestion`) or multi-document retrieval →
-  cloud; context over `local_max_tokens` → cloud; everything else → on-device.
-- **Cloud Q&A** (`src/ai/cloud.ts` + `hybridAsk.ts`): the retrieved redacted
-  chunks of every approved document are assembled into one `RedactedText`
-  (`assembleCloudContext` renumbers colliding tokens across documents and
-  merges the token maps), sent through `sendToCloud` (the branded choke
-  point; the prompt is previewed in the UI), and the answer is **rehydrated
-  locally** with the merged map. A failing on-device answer (empty / no
-  citation) escalates to the cloud when allowed.
-- **Opt-in sync** (`src/sync/firestoreSync.ts`): redacted chunks + structured
-  lab rows go to `users/{uid}/documents/{docId}` only when the user opts in
-  and is signed in; the token map never syncs (guard-tested payload). The
-  app works fully in **local-only mode signed out**.
-- **Local document registry** (`src/sync/docStore.ts`): approved documents
-  stay in IndexedDB and power cross-document retrieval + trends offline.
-- **Trend chart** (`src/sync/TrendsPanel.tsx`, recharts): values per test
-  across collection dates with the latest reference range drawn in.
-- **Status banner states**: green "On-device: nothing leaves this
-  computer", blue "Cloud: sending redacted text only" with a "see what's
-  sent" prompt preview, yellow "Offline: answers limited to on-device",
-  orange "On-device AI unavailable" — driven by `navigator.onLine` + events
-  + a reachability ping (`src/components/connection.ts`). Every answer
-  carries a per-answer badge: "Ran on-device/cloud: \<reason\>".
-
-## Photo scanning (feature 08, stretch)
-
-A photo of a lab page can be read entirely on-device — the image **never**
-leaves the computer:
-
-- **Background queue** (`src/ocr/scanQueue.ts`): photos are processed one
-  at a time; each is downscaled/re-encoded in an **image Web Worker**
-  (`OffscreenCanvas`, `src/ocr/image.worker.ts`) so the UI never blocks.
-  A browser Notification fires when the queue drains.
-- **On-device vision only**: the image is sent to Chrome's on-device model
-  via `generateOnDevice` (`ONLY_ON_DEVICE`, inline image part). If the
-  on-device model is unavailable the scan fails with "Photo scanning needs
-  on-device AI in Chrome; please upload a text PDF" — the image is never
-  sent to the cloud (guard-tested).
-- **Strict numbers**: the model is instructed to copy numbers EXACTLY as
-  printed — a misread number is a **failure**, never auto-corrected.
-- **Confirm extracted values** (`src/ocr/ScanPanel.tsx`): every read row is
-  shown in a table where the user can untick junk rows and fix values
-  inline; only confirmed rows continue into the standard redaction review.
-- **Golden accuracy tests** (`tests/ocr/golden.test.ts`): clean canned
-  renders must match the F3 fixture expectations (≥95% required — we hold
-  100%); simulated "phone photo" noise (5→3, 0→8, 1→7 digit confusions)
-  produces counted failures, demonstrating why the confirm step exists.
+1. **F1** scaffold (Vite + React + TS, CI with build/test/gitleaks)
+2. **F2** Firebase Auth + Firestore (owner-only rules, emulator tests)
+3. **F3** lab table extraction (golden tests, 100% on value/unit/flag)
+4. **F4** redaction (regex + on-device Nano, review gate, branded
+   `RedactedText` cloud choke point, token maps in IndexedDB)
+5. **F5** local retrieval (chunks, MiniLM worker embeddings, hybrid ranking)
+6. **F6** on-device intelligence (Q&A with citations, explanations, doctor
+   questions, map-reduce summary)
+7. **F7** hybrid routing + cloud (Remote Config router, opt-in Firestore
+   sync, trends, banner states, per-answer routing badge)
+8. **F8** background photo OCR (on-device multimodal, queue, confirm step)
+9. **F9** polish + deploy (onboarding, footer, empty states, Hosting)
 
 ## Getting started
 
@@ -196,31 +166,53 @@ cp .env.example .env   # fill in your Firebase config + App Check keys
 npm run dev
 ```
 
+Requirements: a recent desktop Chrome (for the on-device model), Node 20+.
 No real PII or keys are committed; `.env*` is git-ignored.
+
+## Deploy
+
+```bash
+npm run build
+npx firebase-tools deploy --only hosting   # project: safedocs-72b77
+```
+
+Enable the Gemini Developer API in the Firebase console (AI Logic) and set
+`cloud_enabled` in Remote Config to allow cloud routing. Enforce App Check
+for AI Logic in the console for production.
 
 ## Scripts
 
 - `npm run dev` — dev server
 - `npm run build` — type-check + production build
 - `npm test` — run unit tests once
-- `npm run test:watch` — tests in watch mode
 - `npm run lint` — oxlint
 - `npm run gen:fixtures` — regenerate the synthetic lab PDFs + expected JSON
 
-## Firebase setup notes
+## Demo script (< 3 minutes)
 
-- **AI Logic (hybrid)**: enable Gemini Developer API in the Firebase console;
-  the model is configured in `src/ai/hybrid.ts` with
-  `InferenceMode.PREFER_ON_DEVICE`. On-device inference uses Chrome's built-in
-  model (Prompt API) and falls back to `gemini-3.8-flash` in the cloud.
-  Anything that may contain PII (raw document text) uses
-  `InferenceMode.ONLY_ON_DEVICE` via `generateOnDevice()` — the SDK never
-  falls back to the cloud on that path.
-- **App Check**: register a reCAPTCHA Enterprise site key; in dev you can set
-  `VITE_APP_CHECK_DEBUG_TOKEN` and add the token under App Check → Manage
-  debug tokens.
-- **Remote Config**: defaults ship in code (`local_max_tokens: 3000`) so the
-  app works before any backend fetch.
+1. **Upload** (`0:00`): open the deployed app, pick a synthetic lab PDF →
+   parsed results table appears instantly (local pdf.js), banner is green.
+2. **Redaction review** (`0:30`): highlights show name/DOB/MRN/address;
+   untick one, add a custom one, approve → token map stored on-device.
+   Open "See exactly what the cloud would receive" — only tokens.
+3. **Airplane mode** (`1:15`): turn off Wi-Fi → banner turns yellow. Ask
+   "What was my A1C?" → answered on-device with `[report.pdf, page 1]`
+   citation; badge reads "Ran on-device: Single-document question…".
+4. **Back online, trend** (`2:00`): approve a second visit's PDF, turn
+   Wi-Fi on, ask "How has my A1C trended over time?" → badge reads
+   "Ran in cloud: Trend question…"; open "see what's sent" — the prompt
+   shows `[NAME_1]`, no real name. Show the rehydrated answer next to it.
+5. **Close** (`2:40`): trend chart across the two dates; footer disclaimer.
+
+## Future work
+
+- Tesseract.js fallback for photo OCR when the on-device model is missing.
+- Android/iOS: the same Firebase AI Logic hybrid APIs exist for Kotlin and
+  Swift — on-device Gemini Nano ships in Chrome on Android and in the ML Kit
+  stack, so a React Native/Capacitor port could reuse the routing design.
+- Multi-user family view with per-document sharing grants (Firestore rules
+  already isolate owners).
+- Streaming answers on-device for faster first tokens.
 
 ## License
 

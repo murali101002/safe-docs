@@ -339,6 +339,52 @@ tr:nth-child(even) td {
   font-size: 0.9rem;
 }
 
+/* Onboarding, empty state, footer (feature 09). */
+.onboarding {
+  margin: 1rem 0;
+  border: 1px solid #cde3d3;
+  background: #f2fbf4;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.onboarding h2 {
+  font-size: 1.05rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.onboarding ol {
+  margin: 0 0 0.5rem 1.2rem;
+}
+
+.onboarding li {
+  margin-bottom: 0.4rem;
+}
+
+.empty-state {
+  margin-top: 1rem;
+  border: 1px dashed #c0c0c0;
+  border-radius: 8px;
+  padding: 1rem;
+  color: #555;
+  background: #fff;
+}
+
+.site-footer {
+  border-top: 1px solid #e0e0e0;
+  margin-top: 3rem;
+  padding: 1rem 2rem 2rem;
+  font-size: 0.8rem;
+  color: #555;
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.site-footer p {
+  margin: 0;
+}
+
 .chunk-hits {
   list-style: none;
   padding: 0;
